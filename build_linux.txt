@@ -1,0 +1,1 @@
+g++ example1.cpp -o example1 -std=c++11 -lpthread
