@@ -3,10 +3,15 @@
 #include <stdint.h>
 #include <chrono>
 #include <string>
+#include <sstream>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
- 
+#include <atomic>
+
+
+std::atomic<bool> AppShutdown(false);
+
 
 // Wrap a thread to make it follow raii
 class thread_raii
@@ -93,31 +98,74 @@ class Queue
 typedef Queue<std::string> StringQueue;
 
 // example worker object to be run by a thread..
-struct worker
+// Generates messages and puts them into a queue.
+class MessageGenerator 
 {
-    void operator()(std::string taskName, int delayms, StringQueue *q, bool isSrc )
+public:
+    void operator()(std::string taskName, int delayms, StringQueue *q )
     {
-        // thread main
-        std::cout << taskName << " starting operation.." << std::endl;
-        for ( int i=0; i<10; i++ ) {
+        int cnt = 0;
+        std::cout << "Message Generator is starting.." << std::endl;
+        while ( ! AppShutdown.load() )
+        {
+            std::string message("message id ");
+            message += std::to_string( cnt );
+            std::cout << "Enqueued message: \"" << message << "\"" << std::endl;
+            q->push( message );
+            cnt++;
             std::this_thread::sleep_for(std::chrono::milliseconds(delayms));
-            std::cout << taskName << " : " << i << std::endl; 
         }
-        std::cout << taskName << " done.." << std::endl;
+        // signal we are done
+        std::string message("shutdown");
+        q->push( message );
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayms));
+        std::cout << "Message Generator has finished.." << std::endl;
     }
 };
 
+// example worker object to be run by a thread..
+// Read messages from a queue and prints them on the screen.
+class MessageReceiver
+{
+public:
+    void operator()(std::string taskName, int delayms, StringQueue *q )
+    {
+        int cnt = 0;
+        bool active = true;
+        std::cout << "Message Received is starting.." << std::endl;
+        while ( active )
+        {
+            std::string message( q->pop() );
+            std::cout << "Received Message: \"" << message << "\"" << std::endl;
+            if ( message.compare("shutdown") == 0 )
+            {
+                active = false;
+                std::cout << "Received received a shutdown message.." << std::endl;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayms));
+        }
+        std::cout << "Received Exit.." << std::endl;
+    }
+};
 
 class application
 {
     public:
+
+    StringQueue q;
+
     application() { std::cout << "Application is initializing..\n"; }
+
     int run() {
-        worker mySrcWorker;
-        worker mySinkWorker;
-        thread_raii t1( std::string("SrcWorker"), mySrcWorker, std::string("Generator"), 100 );
-        thread_raii t2( std::string("SinkWorker"), mySinkWorker, std::string("Receiver"), 80 );
-        std::cout << "Main Application Done..\n";
+        MessageGenerator GenWorker;
+        MessageReceiver RecvWorker;
+        thread_raii t1( std::string("GenWorker"), GenWorker, std::string("Generator"), 1, &q);
+        thread_raii t2( std::string("RecvWorker"), RecvWorker, std::string("Receiver"), 5, &q);
+        std::cout << "Threads spawned.. Let them run for 5 seconds" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::cout << "Signaling shutdown to threads.." << std::endl;
+        AppShutdown.store(true);       
+        std::cout << "Main Application Done.." << std::endl;
         return 0;
     }
 
@@ -125,6 +173,8 @@ class application
         std::cout << "Main Application Garbage Collection Complete.." << std::endl;
     }
 };
+
+
 
 int main() {
     application myApp;
